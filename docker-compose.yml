@@ -1,0 +1,118 @@
+version: '3.8'
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.2.15
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.2.15
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    entrypoint:
+      - bash
+      - -c
+      - |
+        # Đợi Zookeeper sẵn sàng (tối đa 30s)
+        while ! nc -z zookeeper 2181; do
+          echo "Waiting for Zookeeper..."; sleep 2;
+        done
+
+        # 1) Start Kafka in background
+        /etc/confluent/docker/run &
+
+        # 2) Wait until it’s ready (max 20s)
+        cub kafka-ready -b kafka:9092 1 20
+
+        # 3) Tạo topic dữ liệu nếu chưa tồn tại
+        kafka-topics \
+          --bootstrap-server kafka:9092 \
+          --create \
+          --if-not-exists \
+          --replication-factor 1 \
+          --partitions 1 \
+          --topic mysql_server.etl_db.users
+
+        # 4) Tạo topic schema history nếu chưa tồn tại
+        kafka-topics \
+          --bootstrap-server kafka:9092 \
+          --create \
+          --if-not-exists \
+          --replication-factor 1 \
+          --partitions 1 \
+          --topic schema-changes.etl_db
+
+        # 5) Giữ process Kafka chạy ở foreground
+        wait    
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+  debezium:
+    image: debezium/connect:2.7.3.Final
+    depends_on:
+      - kafka
+      - mysql
+    ports:
+      - "8083:8083"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/"]
+      interval: 10s
+      retries: 6
+      start_period: 15s
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: 1
+      CONFIG_STORAGE_TOPIC: debezium_config
+      OFFSET_STORAGE_TOPIC: debezium_offset
+      STATUS_STORAGE_TOPIC: debezium_status
+
+
+  mysql:
+    image: mysql:8.0.43-oraclelinux9
+    ports:
+      - "3307:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpwd
+      MYSQL_DATABASE: etl_db
+    volumes:
+      - ./init-scripts:/docker-entrypoint-initdb.d
+      - ./mysql/my.cnf:/etc/mysql/conf.d/mysql.cnf
+
+
+  spark:
+    image: bitnami/spark:3.5.3
+    depends_on:
+      - kafka
+      - mysql
+      - mongo
+      - debezium
+    volumes:
+      - ./spark:/opt/spark-app
+    command: >
+      /opt/bitnami/spark/bin/spark-submit
+      --master local[2]
+            --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3,org.mongodb.spark:mongo-spark-connector_2.12:3.0.1,org.apache.kafka:kafka-clients:3.5.2
+      /opt/spark-app/etl_job.py
+    environment:
+      SPARK_CONF_DIR: /opt/bitnami/spark/conf
+
+  mongo:
+    image: mongo:8.0.12-noble
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+
+volumes:
+  mongo-data:
