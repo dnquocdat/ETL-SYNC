@@ -222,11 +222,3 @@ To stop and remove containers, networks, and volumes:
 docker-compose down -v
 ```
 
----
-
-## Authors & License
-
-* **Your Name** ([your.email@example.com](mailto:your.email@example.com))
-* **Project Contributors**: Team members or group
-
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
