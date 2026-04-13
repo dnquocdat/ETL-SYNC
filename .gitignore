@@ -1,0 +1,45 @@
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Spark runtime artifacts
+spark/checkpoint/
+spark/warehouse/
+
+# Runtime data and logs (scoped paths only)
+data/
+generated_data/
+logs/
+*.log
+
+# Local docker/compose overrides
+*.local
+docker/volumes/
+
+# IDE and OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

@@ -1,0 +1,13 @@
+apiVersion: 1
+
+providers:
+  - name: "ETL-SYNC Dashboards"
+    orgId: 1
+    folder: "ETL-SYNC"
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

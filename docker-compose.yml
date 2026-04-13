@@ -1,111 +1,137 @@
-version: '3.8'
-
 services:
-  zookeeper:
-    image: confluentinc/cp-zookeeper:7.2.15
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
-    ports:
-      - "2181:2181"
+  # ════════════════════════════════════════════════════════════
+  # CORE INFRASTRUCTURE - KAFKA KRAFT 3 NODES
+  # ════════════════════════════════════════════════════════════
 
-  kafka:
-    image: confluentinc/cp-kafka:7.2.15
-    depends_on:
-      - zookeeper
+  kafka1:
+    image: apache/kafka:latest
+    container_name: kafka1
     ports:
-      - "9092:9092"
+      - "9093:9093"
+    volumes:
+      - kafka1-data:/var/lib/kafka/data
+    environment:
+      KAFKA_BROKER_ID: 1
+      CLUSTER_ID: t7jxO1XIQwWtRhIzV5PE4w
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka1:29092,EXTERNAL://localhost:9093
+      KAFKA_LISTENERS: CONTROLLER://:9092,EXTERNAL://0.0.0.0:9093,INTERNAL://:29092
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka1:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+
+  kafka2:
+    image: apache/kafka:latest
+    container_name: kafka2
+    ports:
+      - "9094:9093"
+    volumes:
+      - kafka2-data:/var/lib/kafka/data
+    environment:
+      KAFKA_BROKER_ID: 2
+      CLUSTER_ID: t7jxO1XIQwWtRhIzV5PE4w
+      KAFKA_PROCESS_ROLES: broker
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka2:29092,EXTERNAL://localhost:9094
+      KAFKA_LISTENERS: EXTERNAL://0.0.0.0:9093,INTERNAL://:29092
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka1:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+
+  kafka3:
+    image: apache/kafka:latest
+    container_name: kafka3
+    ports:
+      - "9095:9093"
+    volumes:
+      - kafka3-data:/var/lib/kafka/data
+    environment:
+      KAFKA_BROKER_ID: 3
+      CLUSTER_ID: t7jxO1XIQwWtRhIzV5PE4w
+      KAFKA_PROCESS_ROLES: broker
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka3:29092,EXTERNAL://localhost:9095
+      KAFKA_LISTENERS: EXTERNAL://0.0.0.0:9093,INTERNAL://:29092
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka1:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+
+  kafka-init:
+    image: apache/kafka:latest
+    container_name: kafka-init
+    depends_on:
+      - kafka1
+      - kafka2
+      - kafka3
     entrypoint:
       - bash
       - -c
       - |
-        # Đợi Zookeeper sẵn sàng (tối đa 30s)
-        while ! nc -z zookeeper 2181; do
-          echo "Waiting for Zookeeper..."; sleep 2;
+        echo "⏳ Waiting for Kafka cluster..."
+        # Đợi cả 3 broker sẵn sàng
+        while ! nc -z kafka1 29092 || ! nc -z kafka2 29092 || ! nc -z kafka3 29092; do
+          sleep 2
+        done
+        sleep 5
+
+        BOOTSTRAP="kafka1:29092,kafka2:29092,kafka3:29092"
+
+        echo "📦 Creating CDC topics (3 partitions, replication-factor 3)..."
+        for TABLE in products inventory orders order_items; do
+          /opt/kafka/bin/kafka-topics.sh \
+            --bootstrap-server $$BOOTSTRAP \
+            --create --if-not-exists \
+            --replication-factor 3 \
+            --partitions 3 \
+            --topic mysql_server.etl_db.$$TABLE
+          echo "mysql_server.etl_db.$$TABLE"
         done
 
-        # 1) Start Kafka in background
-        /etc/confluent/docker/run &
-
-        # 2) Wait until it’s ready (max 20s)
-        cub kafka-ready -b kafka:9092 1 20
-
-        # 3) Tạo topic dữ liệu nếu chưa tồn tại
-        kafka-topics \
-          --bootstrap-server kafka:9092 \
-          --create \
-          --if-not-exists \
-          --replication-factor 1 \
-          --partitions 1 \
-          --topic mysql_server.etl_db.users
-
-        # 4) Tạo topic schema history nếu chưa tồn tại
-        kafka-topics \
-          --bootstrap-server kafka:9092 \
-          --create \
-          --if-not-exists \
-          --replication-factor 1 \
+        echo "Creating schema history topic..."
+        /opt/kafka/bin/kafka-topics.sh \
+          --bootstrap-server $$BOOTSTRAP \
+          --create --if-not-exists \
+          --replication-factor 3 \
           --partitions 1 \
           --topic schema-changes.etl_db
 
-        # 5) Giữ process Kafka chạy ở foreground
-        wait    
-    environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+        echo "Creating Dead Letter Queue topic..."
+        /opt/kafka/bin/kafka-topics.sh \
+          --bootstrap-server $$BOOTSTRAP \
+          --create --if-not-exists \
+          --replication-factor 3 \
+          --partitions 1 \
+          --topic dlq.etl_sync
 
-  debezium:
-    image: debezium/connect:2.7.3.Final
-    depends_on:
-      - kafka
-      - mysql
-    ports:
-      - "8083:8083"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8083/"]
-      interval: 10s
-      retries: 6
-      start_period: 15s
-    environment:
-      BOOTSTRAP_SERVERS: kafka:9092
-      GROUP_ID: 1
-      CONFIG_STORAGE_TOPIC: debezium_config
-      OFFSET_STORAGE_TOPIC: debezium_offset
-      STATUS_STORAGE_TOPIC: debezium_status
+        echo "Kafka initialization complete!"
 
+  # ════════════════════════════════════════════════════════════
+  # DATABASES
+  # ════════════════════════════════════════════════════════════
 
   mysql:
     image: mysql:8.0.43-oraclelinux9
     ports:
       - "3307:3306"
     environment:
-      MYSQL_ROOT_PASSWORD: rootpwd
-      MYSQL_DATABASE: etl_db
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpwd}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-etl_db}
     volumes:
       - ./init-scripts:/docker-entrypoint-initdb.d
       - ./mysql/my.cnf:/etc/mysql/conf.d/mysql.cnf
-
-
-  spark:
-    image: bitnami/spark:3.5.3
-    depends_on:
-      - kafka
-      - mysql
-      - mongo
-      - debezium
-    volumes:
-      - ./spark:/opt/spark-app
-    command: >
-      /opt/bitnami/spark/bin/spark-submit
-      --master local[2]
-            --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3,org.mongodb.spark:mongo-spark-connector_2.12:3.0.1,org.apache.kafka:kafka-clients:3.5.2
-      /opt/spark-app/etl_job.py
-    environment:
-      SPARK_CONF_DIR: /opt/bitnami/spark/conf
 
   mongo:
     image: mongo:8.0.12-noble
@@ -114,5 +140,121 @@ services:
     volumes:
       - mongo-data:/data/db
 
+  # ════════════════════════════════════════════════════════════
+  # CDC PIPELINE
+  # ════════════════════════════════════════════════════════════
+
+  debezium:
+    image: debezium/connect:2.7.3.Final
+    depends_on:
+      - kafka1
+      - kafka2
+      - kafka3
+      - mysql
+    ports:
+      - "8083:8083"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/"]
+      interval: 10s
+      retries: 10
+      start_period: 30s
+    environment:
+      BOOTSTRAP_SERVERS: kafka1:29092,kafka2:29092,kafka3:29092
+      GROUP_ID: 1
+      CONFIG_STORAGE_TOPIC: debezium_config
+      OFFSET_STORAGE_TOPIC: debezium_offset
+      STATUS_STORAGE_TOPIC: debezium_status
+      CONFIG_STORAGE_REPLICATION_FACTOR: 3
+      OFFSET_STORAGE_REPLICATION_FACTOR: 3
+      STATUS_STORAGE_REPLICATION_FACTOR: 3
+
+  spark:
+    image: apache/spark:3.5.3
+    user: root
+    depends_on:
+      - kafka-init
+      - mysql
+      - mongo
+      - debezium
+    volumes:
+      - ./spark:/opt/spark-app
+    entrypoint:
+      - bash
+      - -c
+      - |
+        pip install pymongo kafka-python prometheus_client &&
+        /opt/spark/bin/spark-submit \
+          --master local[4] \
+          --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3,org.mongodb.spark:mongo-spark-connector_2.12:3.0.1,org.apache.kafka:kafka-clients:3.5.2 \
+          --conf spark.executor.memory=1g \
+          --conf spark.driver.memory=1g \
+          --conf spark.sql.shuffle.partitions=4 \
+          --conf spark.streaming.backpressure.enabled=true \
+          --py-files /opt/spark-app/config.py,/opt/spark-app/metrics.py,/opt/spark-app/validators.py \
+          /opt/spark-app/etl_job.py
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-kafka1:29092,kafka2:29092,kafka3:29092}
+      MONGO_URI: ${MONGO_URI:-mongodb://mongo:27017}
+      MONGO_DATABASE: ${MONGO_DATABASE:-etl_db}
+      DLQ_ENABLED: ${DLQ_ENABLED:-true}
+      DLQ_TOPIC: ${DLQ_TOPIC:-dlq.etl_sync}
+      METRICS_ENABLED: ${METRICS_ENABLED:-true}
+      PUSHGATEWAY_URL: ${PUSHGATEWAY_URL:-http://pushgateway:9091}
+      SPARK_LOG_LEVEL: ${SPARK_LOG_LEVEL:-WARN}
+      PROCESSING_TIME: ${PROCESSING_TIME:-5 seconds}
+
+  # ════════════════════════════════════════════════════════════
+  # MONITORING & UI
+  # ════════════════════════════════════════════════════════════
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    ports:
+      - "8000:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: etl-sync-cluster
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: "kafka1:29092,kafka2:29092,kafka3:29092"
+    depends_on:
+      - kafka1
+      - kafka2
+      - kafka3
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=7d'
+
+  pushgateway:
+    image: prom/pushgateway:latest
+    ports:
+      - "9091:9091"
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GF_SECURITY_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
+      - grafana-data:/var/lib/grafana
+
 volumes:
   mongo-data:
+  prometheus-data:
+  grafana-data:
+  kafka1-data:
+  kafka2-data:
+  kafka3-data:
